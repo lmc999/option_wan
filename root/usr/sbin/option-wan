@@ -1,0 +1,432 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+
+CONFIG="option_wan"
+STATE_FILE="/var/run/option-wan.state"
+LOCK_DIR="/var/lock/option-wan.lock"
+
+GLOBAL_ENABLED="0"
+PRIORITY_BASE="900"
+TABLE_BASE="21000"
+RULE_INDEX="0"
+NEW_STATE=""
+RESOLVED_TARGETS=""
+JSON_COMMA=""
+
+log() {
+	logger -t option-wan "$*"
+}
+
+is_uint() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+
+	return 0
+}
+
+valid_ipv4() {
+	local ip="$1"
+	local oldifs="$IFS"
+	local a b c d extra
+
+	IFS=.
+	set -- $ip
+	IFS="$oldifs"
+
+	a="$1"
+	b="$2"
+	c="$3"
+	d="$4"
+	extra="$5"
+
+	[ -z "$extra" ] || return 1
+
+	for octet in "$a" "$b" "$c" "$d"; do
+		is_uint "$octet" || return 1
+		[ "$octet" -ge 0 ] 2>/dev/null || return 1
+		[ "$octet" -le 255 ] 2>/dev/null || return 1
+	done
+
+	return 0
+}
+
+valid_dest() {
+	local dest="$1"
+	local ip prefix
+
+	case "$dest" in
+		*/*)
+			ip="${dest%/*}"
+			prefix="${dest#*/}"
+			valid_ipv4 "$ip" || return 1
+			is_uint "$prefix" || return 1
+			[ "$prefix" -ge 0 ] 2>/dev/null || return 1
+			[ "$prefix" -le 32 ] 2>/dev/null || return 1
+		;;
+		*)
+			valid_ipv4 "$dest" || return 1
+		;;
+	esac
+
+	return 0
+}
+
+valid_iface() {
+	case "$1" in
+		''|*[!A-Za-z0-9_]*)
+			return 1
+		;;
+	esac
+
+	return 0
+}
+
+valid_uci_section() {
+	case "$1" in
+		''|*[!A-Za-z0-9_-]*)
+			return 1
+		;;
+	esac
+
+	return 0
+}
+
+valid_hostname() {
+	case "$1" in
+		''|*[^A-Za-z0-9.-]*|.*|*.)
+			return 1
+		;;
+	esac
+
+	return 0
+}
+
+valid_base() {
+	local value="$1"
+	local min="$2"
+	local max="$3"
+
+	is_uint "$value" || return 1
+	[ "$value" -ge "$min" ] 2>/dev/null || return 1
+	[ "$value" -le "$max" ] 2>/dev/null || return 1
+
+	return 0
+}
+
+json_escape() {
+	printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\t/\\t/g'
+}
+
+print_passwall_node() {
+	local section="$1"
+	local remarks type protocol address
+
+	valid_uci_section "$section" || return 0
+
+	config_get remarks "$section" remarks "$section"
+	config_get type "$section" type
+	config_get protocol "$section" protocol
+	config_get address "$section" address
+
+	[ -n "$address" ] || return 0
+	[ "$protocol" = "_shunt" ] && return 0
+
+	printf '%s{"id":"%s","remarks":"%s","type":"%s","protocol":"%s","address":"%s"}' \
+		"$JSON_COMMA" \
+		"$(json_escape "$section")" \
+		"$(json_escape "$remarks")" \
+		"$(json_escape "$type")" \
+		"$(json_escape "$protocol")" \
+		"$(json_escape "$address")"
+
+	JSON_COMMA=","
+}
+
+show_passwall_nodes() {
+	JSON_COMMA=""
+	printf '['
+	config_load passwall 2>/dev/null
+	config_foreach print_passwall_node nodes
+	printf ']\n'
+}
+
+append_resolved_target() {
+	local dest="$1"
+
+	valid_dest "$dest" || return 1
+
+	case "
+$RESOLVED_TARGETS
+" in
+		*"
+$dest
+"*)
+			return 0
+		;;
+	esac
+
+	RESOLVED_TARGETS="${RESOLVED_TARGETS}${dest}
+"
+}
+
+resolve_rule_targets() {
+	local mode="$1"
+	local dest="$2"
+	local node="$3"
+	local address candidate
+
+	RESOLVED_TARGETS=""
+
+	case "$mode" in
+		''|manual)
+			append_resolved_target "$dest"
+		;;
+		passwall)
+			if ! valid_uci_section "$node"; then
+				log "skip invalid PassWall node id: $node"
+				return 1
+			fi
+
+			address="$(uci -q get "passwall.${node}.address" 2>/dev/null)"
+
+			if [ -z "$address" ]; then
+				log "skip PassWall node $node because address is empty"
+				return 1
+			fi
+
+			if valid_ipv4 "$address"; then
+				append_resolved_target "$address"
+			elif valid_hostname "$address"; then
+				for candidate in $(nslookup "$address" 2>/dev/null | awk '
+					{
+						for (i = 1; i <= NF; i++) {
+							gsub(/[;,]/, "", $i)
+							if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)
+								print $i
+						}
+					}
+				'); do
+					append_resolved_target "$candidate"
+				done
+
+				[ -n "$RESOLVED_TARGETS" ] || {
+					log "skip PassWall node $node because domain $address has no IPv4 A record"
+					return 1
+				}
+			else
+				log "skip PassWall node $node unsupported address: $address"
+				return 1
+			fi
+		;;
+		*)
+			log "skip unsupported target mode: $mode"
+			return 1
+		;;
+	esac
+
+	[ -n "$RESOLVED_TARGETS" ]
+}
+
+with_lock() {
+	local i=0
+	local rc
+
+	mkdir -p /var/lock /var/run
+
+	while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+		i=$((i + 1))
+
+		if [ "$i" -ge 10 ]; then
+			log "failed to acquire lock"
+			return 1
+		fi
+
+		sleep 1
+	done
+
+	trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
+	"$@"
+	rc="$?"
+	rmdir "$LOCK_DIR" 2>/dev/null
+	trap - EXIT INT TERM
+
+	return "$rc"
+}
+
+clear_state() {
+	local kind priority table dest iface
+
+	if [ -f "$STATE_FILE" ]; then
+		while read -r kind priority table dest iface; do
+			[ "$kind" = "rule" ] || continue
+			valid_base "$priority" 1 32765 || continue
+			valid_base "$table" 1 4294967295 || continue
+			valid_dest "$dest" || continue
+
+			ip -4 rule del priority "$priority" to "$dest" table "$table" >/dev/null 2>&1
+			ip -4 route flush table "$table" >/dev/null 2>&1
+		done < "$STATE_FILE"
+	fi
+
+	rm -f "$STATE_FILE"
+	ip -4 route flush cache >/dev/null 2>&1
+}
+
+load_global() {
+	config_get_bool GLOBAL_ENABLED global enabled 0
+	config_get PRIORITY_BASE global priority_base 900
+	config_get TABLE_BASE global table_base 21000
+
+	valid_base "$PRIORITY_BASE" 1 32765 || PRIORITY_BASE="900"
+	valid_base "$TABLE_BASE" 1 4294967295 || TABLE_BASE="21000"
+}
+
+add_unreachable_route() {
+	local table="$1"
+
+	ip -4 route flush table "$table" >/dev/null 2>&1
+	ip -4 route add unreachable default table "$table" >/dev/null 2>&1
+}
+
+add_interface_route() {
+	local iface="$1"
+	local table="$2"
+	local device gateway
+
+	network_flush_cache
+	network_is_up "$iface" || return 1
+	network_get_device device "$iface" || return 1
+	[ -n "$device" ] || return 1
+
+	network_get_gateway gateway "$iface" || gateway=""
+
+	ip -4 route flush table "$table" >/dev/null 2>&1
+
+	if [ -n "$gateway" ]; then
+		ip -4 route add default via "$gateway" dev "$device" table "$table" >/dev/null 2>&1 || return 1
+	else
+		ip -4 route add default dev "$device" table "$table" >/dev/null 2>&1 || return 1
+	fi
+
+	return 0
+}
+
+apply_rule() {
+	local section="$1"
+	local enabled name target_mode dest passwall_node iface priority table target route_ready
+
+	config_get_bool enabled "$section" enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get name "$section" name "$section"
+	config_get target_mode "$section" target_mode manual
+	config_get dest "$section" dest
+	config_get passwall_node "$section" passwall_node
+	config_get iface "$section" interface
+
+	if ! resolve_rule_targets "$target_mode" "$dest" "$passwall_node"; then
+		log "skip $name because no usable IPv4 target was resolved"
+		return 0
+	fi
+
+	if ! valid_iface "$iface"; then
+		log "skip invalid interface in $name: $iface"
+		return 0
+	fi
+
+	RULE_INDEX=$((RULE_INDEX + 1))
+	priority=$((PRIORITY_BASE + RULE_INDEX - 1))
+	table=$((TABLE_BASE + RULE_INDEX - 1))
+
+	if ! valid_base "$priority" 1 32765 || ! valid_base "$table" 1 4294967295; then
+		log "skip $name because computed priority/table is out of range"
+		return 0
+	fi
+
+	if add_interface_route "$iface" "$table"; then
+		route_ready="1"
+		log "route $name via $iface using table $table priority $priority"
+	else
+		add_unreachable_route "$table"
+		route_ready="0"
+		log "block $name because interface $iface is unavailable"
+	fi
+
+	for target in $RESOLVED_TARGETS; do
+		ip -4 rule add priority "$priority" to "$target" table "$table" >/dev/null 2>&1 || {
+			log "failed to add rule for $target via table $table"
+			continue
+		}
+
+		NEW_STATE="${NEW_STATE}rule ${priority} ${table} ${target} ${iface}
+"
+
+		if [ "$route_ready" = "1" ]; then
+			log "target $target uses $iface"
+		else
+			log "target $target is blocked until $iface is available"
+		fi
+	done
+}
+
+apply_config() {
+	clear_state
+	config_load "$CONFIG"
+	load_global
+
+	if [ "$GLOBAL_ENABLED" -ne 1 ]; then
+		log "disabled; cleared rules"
+		return 0
+	fi
+
+	NEW_STATE=""
+	RULE_INDEX="0"
+	config_foreach apply_rule rule
+
+	if [ -n "$NEW_STATE" ]; then
+		printf "%s" "$NEW_STATE" > "$STATE_FILE"
+	else
+		rm -f "$STATE_FILE"
+	fi
+
+	ip -4 route flush cache >/dev/null 2>&1
+}
+
+show_status() {
+	echo "Option WAN state:"
+
+	if [ -f "$STATE_FILE" ]; then
+		cat "$STATE_FILE"
+	else
+		echo "no active rules"
+	fi
+}
+
+usage() {
+	cat <<'EOF'
+Usage: option-wan <apply|reload|clear|status>
+       option-wan passwall-nodes
+EOF
+}
+
+case "$1" in
+	apply|reload)
+		with_lock apply_config
+	;;
+	clear)
+		with_lock clear_state
+	;;
+	status)
+		show_status
+	;;
+	passwall-nodes)
+		show_passwall_nodes
+	;;
+	*)
+		usage
+		exit 1
+	;;
+esac

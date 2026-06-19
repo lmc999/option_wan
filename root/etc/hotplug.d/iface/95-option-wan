@@ -1,0 +1,12 @@
+#!/bin/sh
+
+[ -x /usr/sbin/option-wan ] || exit 0
+
+case "$ACTION" in
+	ifup|ifupdate|ifdown)
+		( sleep 2; /usr/sbin/option-wan apply >/dev/null 2>&1 ) &
+	;;
+esac
+
+exit 0
+

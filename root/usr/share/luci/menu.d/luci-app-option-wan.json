@@ -1,0 +1,14 @@
+{
+	"admin/network/option-wan": {
+		"title": "Option WAN",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "option-wan/rules"
+		},
+		"depends": {
+			"acl": [ "luci-app-option-wan" ]
+		}
+	}
+}
+

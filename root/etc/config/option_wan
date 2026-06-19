@@ -1,0 +1,20 @@
+config global 'global'
+	option enabled '0'
+	option priority_base '900'
+	option table_base '21000'
+
+# Example:
+# config rule
+#	option enabled '1'
+#	option name 'Example destination via wan2'
+#	option target_mode 'manual'
+#	option dest '203.0.113.0/24'
+#	option interface 'wan2'
+#
+# PassWall node example:
+# config rule
+#	option enabled '1'
+#	option name 'PassWall node via wan2'
+#	option target_mode 'passwall'
+#	option passwall_node 'xxxxxxxx'
+#	option interface 'wan2'

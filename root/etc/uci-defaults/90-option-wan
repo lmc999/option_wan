@@ -1,0 +1,6 @@
+#!/bin/sh
+
+[ -x /etc/init.d/option-wan ] && /etc/init.d/option-wan enable >/dev/null 2>&1
+
+exit 0
+

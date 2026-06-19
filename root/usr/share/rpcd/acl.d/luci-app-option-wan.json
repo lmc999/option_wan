@@ -1,0 +1,18 @@
+{
+	"luci-app-option-wan": {
+		"description": "Grant access to Option WAN configuration and apply command",
+		"read": {
+			"uci": [ "option_wan", "network" ],
+			"ubus": {
+				"network.interface": [ "dump" ],
+				"network.interface.*": [ "status" ]
+			}
+		},
+		"write": {
+			"uci": [ "option_wan" ],
+			"file": {
+				"/usr/sbin/option-wan": [ "exec" ]
+			}
+		}
+	}
+}
