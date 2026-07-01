@@ -24,6 +24,9 @@ check_shell "$ROOT_DIR/root/etc/uci-defaults/90-option-wan"
 
 check_json "$ROOT_DIR/root/usr/share/luci/menu.d/luci-app-option-wan.json"
 check_json "$ROOT_DIR/root/usr/share/rpcd/acl.d/luci-app-option-wan.json"
+check_json "$ROOT_DIR/root/usr/share/ucitrack/luci-app-option-wan.json"
+
+grep -q '"init": "option-wan"' \
+	"$ROOT_DIR/root/usr/share/ucitrack/luci-app-option-wan.json"
 
 echo "static checks passed"
-

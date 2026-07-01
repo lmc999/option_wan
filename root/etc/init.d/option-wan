@@ -2,7 +2,6 @@
 
 START=95
 STOP=15
-USE_PROCD=1
 
 start_service() {
 	/usr/sbin/option-wan apply
@@ -15,8 +14,3 @@ stop_service() {
 reload_service() {
 	/usr/sbin/option-wan apply
 }
-
-service_triggers() {
-	procd_add_reload_trigger option_wan network
-}
-

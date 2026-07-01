@@ -2,5 +2,17 @@
 
 [ -x /etc/init.d/option-wan ] && /etc/init.d/option-wan enable >/dev/null 2>&1
 
-exit 0
+if [ -x /etc/init.d/ucitrack ]; then
+	uci -q delete ucitrack.option_wan
+	uci commit ucitrack
+	/etc/init.d/ucitrack restart >/dev/null 2>&1
+else
+	uci -q delete ucitrack.option_wan
+	uci set ucitrack.option_wan='option_wan'
+	uci set ucitrack.option_wan.init='option-wan'
+	uci commit ucitrack
+	[ -x /etc/init.d/ucitrack_compat ] &&
+		/etc/init.d/ucitrack_compat restart >/dev/null 2>&1
+fi
 
+exit 0

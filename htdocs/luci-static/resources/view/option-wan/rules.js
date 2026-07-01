@@ -46,6 +46,16 @@ function helpText(text) {
 	}, text);
 }
 
+function saveAndApply(map) {
+	return map.save().then(function() {
+		return uci.commit('option_wan');
+	}).then(function() {
+		return fs.exec('/usr/sbin/option-wan', [ 'apply' ]);
+	}).then(function() {
+		ui.changes.setIndicator(0);
+	});
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -55,6 +65,19 @@ return view.extend({
 				return { stdout: '[]' };
 			})
 		]);
+	},
+
+	handleSave: function() {
+		return saveAndApply(this.map).then(function() {
+			ui.addNotification(null, E('p', _('配置已保存，指定出口规则已应用。')));
+		}).catch(function(err) {
+			ui.addNotification(null, E('p', _('保存或应用指定出口规则失败：') + err.message), 'error');
+			throw err;
+		});
+	},
+
+	handleSaveApply: function() {
+		return this.handleSave();
 	},
 
 	render: function(data) {
@@ -115,7 +138,7 @@ return view.extend({
 		o = s.option(form.Button, '_apply', _('立即应用规则'));
 		o.inputstyle = 'apply';
 		o.onclick = function() {
-			return fs.exec('/usr/sbin/option-wan', [ 'apply' ]).then(function() {
+			return saveAndApply(m).then(function() {
 				ui.addNotification(null, E('p', _('指定出口规则已应用。')));
 			}).catch(function(err) {
 				ui.addNotification(null, E('p', _('应用指定出口规则失败：') + err.message), 'error');
@@ -216,6 +239,7 @@ return view.extend({
 			return helpText(_('选择 OpenWrt 逻辑网络接口，例如 wan2。PPPoE 重拨后会自动重新解析实际出口设备和网关。'));
 		};
 
+		this.map = m;
 		return m.render();
 	}
 });
