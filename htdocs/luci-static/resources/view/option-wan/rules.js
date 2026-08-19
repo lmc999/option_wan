@@ -5,6 +5,14 @@
 'require network';
 'require fs';
 'require ui';
+'require rpc';
+
+var callUciCommit = rpc.declare({
+	object: 'uci',
+	method: 'commit',
+	params: [ 'config' ],
+	reject: true
+});
 
 function isIPv4(value) {
 	var parts = String(value || '').split('.');
@@ -48,7 +56,9 @@ function helpText(text) {
 
 function saveAndApply(map) {
 	return map.save().then(function() {
-		return fs.exec('/usr/sbin/option-wan', [ 'commit-apply' ]);
+		return callUciCommit('option_wan');
+	}).then(function() {
+		return fs.exec('/usr/sbin/option-wan', [ 'apply' ]);
 	}).then(function() {
 		ui.changes.setIndicator(0);
 	});
