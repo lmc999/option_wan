@@ -48,9 +48,7 @@ function helpText(text) {
 
 function saveAndApply(map) {
 	return map.save().then(function() {
-		return uci.commit('option_wan');
-	}).then(function() {
-		return fs.exec('/usr/sbin/option-wan', [ 'apply' ]);
+		return fs.exec('/usr/sbin/option-wan', [ 'commit-apply' ]);
 	}).then(function() {
 		ui.changes.setIndicator(0);
 	});

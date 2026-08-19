@@ -28,5 +28,8 @@ check_json "$ROOT_DIR/root/usr/share/ucitrack/luci-app-option-wan.json"
 
 grep -q '"init": "option-wan"' \
 	"$ROOT_DIR/root/usr/share/ucitrack/luci-app-option-wan.json"
+grep -q "fs.exec('/usr/sbin/option-wan', \[ 'commit-apply' \])" \
+	"$ROOT_DIR/htdocs/luci-static/resources/view/option-wan/rules.js"
+grep -q 'uci commit "$CONFIG"' "$ROOT_DIR/root/usr/sbin/option-wan"
 
 echo "static checks passed"

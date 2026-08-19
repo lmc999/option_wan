@@ -395,6 +395,15 @@ apply_config() {
 	ip -4 route flush cache >/dev/null 2>&1
 }
 
+commit_and_apply() {
+	if ! uci commit "$CONFIG"; then
+		log "failed to commit $CONFIG configuration"
+		return 1
+	fi
+
+	apply_config
+}
+
 show_status() {
 	echo "Option WAN state:"
 
@@ -407,7 +416,7 @@ show_status() {
 
 usage() {
 	cat <<'EOF'
-Usage: option-wan <apply|reload|clear|status>
+Usage: option-wan <apply|reload|commit-apply|clear|status>
        option-wan passwall-nodes
 EOF
 }
@@ -415,6 +424,9 @@ EOF
 case "$1" in
 	apply|reload)
 		with_lock apply_config
+	;;
+	commit-apply)
+		with_lock commit_and_apply
 	;;
 	clear)
 		with_lock clear_state
